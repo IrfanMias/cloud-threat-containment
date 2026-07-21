@@ -1,0 +1,78 @@
+{
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {},
+    "triggers": {
+        "When_a_response_to_an_Azure_Sentinel_alert_is_triggered": {
+            "type": "Request",
+            "kind": "Http",
+            "inputs": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "WorkspaceId": { "type": "string" },
+                        "AlertDisplayName": { "type": "string" },
+                        "Entities": { "type": "array" }
+                    }
+                }
+            }
+        }
+    },
+    "actions": {
+        "Extract_IP_Entity": {
+            "type": "InitializeVariable",
+            "inputs": {
+                "variables": [
+                    {
+                        "name": "SuspectIP",
+                        "type": "string",
+                        "value": "@triggerBody()?['Entities'][0]?['Address']"
+                    }
+                ]
+            }
+        },
+        "Query_VirusTotal_API": {
+            "type": "Http",
+            "dependsOn": [ "Extract_IP_Entity" ],
+            "inputs": {
+                "method": "GET",
+                "uri": "https://www.virustotal.com/api/v3/ip_addresses/@{variables('SuspectIP')}",
+                "headers": {
+                    "x-apikey": "YOUR_VT_API_KEY_SECRET",
+                    "accept": "application/json"
+                }
+            }
+        },
+        "Evaluate_Threat_Score": {
+            "type": "If",
+            "dependsOn": [ "Query_VirusTotal_API" ],
+            "expression": {
+                "and": [
+                    {
+                        "greater": [
+                            "@body('Query_VirusTotal_API')?['data']?['attributes']?['last_analysis_stats']?['malicious']",
+                            0
+                        ]
+                    }
+                ]
+            },
+            "actions": {
+                "Block_IP_in_Network_Security_Group": {
+                    "type": "ApiConnection",
+                    "inputs": {
+                        "host": { "connection": { "name": "@parameters('$connections')['azurenetwork']['connectionId']" } },
+                        "method": "put",
+                        "path": "/subscriptions/{subscriptionId}/resourceGroups/{resourceGroup}/providers/Microsoft.Network/networkSecurityGroups/{nsgName}/securityRules/{ruleName}",
+                        "body": {
+                            "properties": {
+                                "access": "Deny",
+                                "direction": "Inbound",
+                                "sourceAddressPrefix": "@variables('SuspectIP')"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
